@@ -1,70 +1,35 @@
 import os
-import re
-import time
-from urllib.parse import urlparse, urljoin
-
-from playwright.sync_api import sync_playwright
+from urllib.parse import urlparse
+from utils.crawler import crawl_website
 from utils.uploader import upload_directory_to_drive
-
-def sanitize_filename(url):
-    return re.sub(r'[^a-zA-Z0-9_\-\.]', '_', url)
-
-def save_html(content, path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-
-def crawl_page(page, url, domain, visited, save_dir, max_depth, current_depth):
-    if current_depth > max_depth or url in visited:
-        return
-
-    try:
-        response = page.goto(url, wait_until="networkidle", timeout=15000)
-        if not response or response.status >= 400:
-            print(f"Failed to fetch {url} - Status code: {response.status if response else 'No Response'}")
-            return
-        print(f"Crawled {url}")
-
-        visited.add(url)
-        html_content = page.content()
-        filename = sanitize_filename(urlparse(url).path.strip("/")) or "index"
-        file_path = os.path.join(save_dir, f"{filename}.html")
-        save_html(html_content, file_path)
-
-        if current_depth < max_depth:
-            links = page.eval_on_selector_all("a", "elements => elements.map(e => e.href)")
-            for link in links:
-                if link and domain in link:
-                    crawl_page(page, link.split("#")[0], domain, visited, save_dir, max_depth, current_depth + 1)
-
-    except Exception as e:
-        print(f"Error crawling {url}: {str(e)}")
+from utils.html_to_text import extract_texts_from_html_folder
 
 def main():
-    website_url = input("Enter the website URL to crawl (e.g., https://example.com): ").strip()
-    parsed_url = urlparse(website_url)
-    domain = parsed_url.netloc
-    if not domain:
-        print("Invalid URL. Exiting.")
-        return
+    url = input("Enter the website URL to crawl (e.g., https://example.com): ").strip()
+    parsed_url = urlparse(url)
+    domain_name = parsed_url.netloc.replace(".", "_")
 
-    folder_name = f"{domain.replace('.', '_')}_crawl"
-    save_dir = os.path.join(os.getcwd(), folder_name)
-    os.makedirs(save_dir, exist_ok=True)
+    # Folder names
+    crawl_output_dir = f"{domain_name}_crawl"
+    text_output_dir = f"{domain_name}_texts"
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    # Step 1: Crawl website
+    print(f"\n🚀 Crawling {url}...")
+    crawl_website(url, crawl_output_dir)
 
-        print(f"Crawling {website_url} up to 2 levels...")
-        visited = set()
-        crawl_page(page, website_url, domain, visited, save_dir, max_depth=1, current_depth=0)
+    # Step 2: Upload HTML files to Drive
+    print(f"\n☁️ Uploading HTMLs to Google Drive folder '{domain_name}_crawl'...")
+    upload_directory_to_drive(crawl_output_dir, domain_name + "_crawl")
 
-        browser.close()
+    # Step 3: Extract text files from crawled HTMLs
+    print(f"\n🧹 Extracting clean text from HTMLs...")
+    extract_texts_from_html_folder(crawl_output_dir, text_output_dir)
 
-    print("Uploading to Google Drive...")
-    upload_directory_to_drive(save_dir, domain)
-    print("Done!")
+    # Step 4: Upload TXT files to Drive
+    print(f"\n☁️ Uploading clean text files to Google Drive folder '{domain_name}_texts'...")
+    upload_directory_to_drive(text_output_dir, domain_name + "_texts")
+
+    print("\n✅ All done! You can now point Flowise to the text files in Drive.")
 
 if __name__ == "__main__":
     main()
