@@ -1,64 +1,72 @@
-# uploader.py
 import os
 import re
-import requests
-from urllib.parse import urlparse
+import pickle
+import mimetypes
+import io
+from google.auth.transport.requests import Request
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.oauth2 import service_account
 
-# Setup Google Drive API
+# Google Drive folder ID where all crawls will be organized
+DRIVE_PARENT_FOLDER_ID = "YOUR_PARENT_FOLDER_ID_HERE"  # Change this
+
+# Google API Scopes
+SCOPES = ['https://www.googleapis.com/auth/drive']
+
 def authenticate_drive():
-    SCOPES = ['https://www.googleapis.com/auth/drive']
-    SERVICE_ACCOUNT_FILE = 'credentials.json'  # Update with your service account file
+    creds = None
+    if os.path.exists('token.json'):
+        with open('token.json', 'rb') as token:
+            creds = pickle.load(token)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            creds = service_account.Credentials.from_service_account_file(
+                'credentials.json', scopes=SCOPES)
+    service = build('drive', 'v3', credentials=creds)
+    return service
 
-    credentials = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+def sanitize_folder_name(domain):
+    domain = domain.lower().replace('.', '_')
+    domain = re.sub(r'[^a-z0-9_]', '_', domain)
+    return f"{domain}_crawl"
 
-    drive_service = build('drive', 'v3', credentials=credentials)
-    return drive_service
+def create_subfolder(service, parent_folder_id, folder_name):
+    query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and '{parent_folder_id}' in parents"
+    results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+    items = results.get('files', [])
+    if items:
+        print(f"Folder '{folder_name}' already exists in Drive.")
+        return items[0]['id']
+    else:
+        file_metadata = {
+            'name': folder_name,
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [parent_folder_id]
+        }
+        folder = service.files().create(body=file_metadata, fields='id').execute()
+        print(f"Created folder '{folder_name}' in Drive.")
+        return folder.get('id')
 
-# Create folder in Google Drive
-def create_folder(drive_service, folder_name, parent_folder_id=None):
+def upload_file(service, file_path, folder_id):
+    file_name = os.path.basename(file_path)
+    mimetype, _ = mimetypes.guess_type(file_path)
+    media = MediaFileUpload(file_path, mimetype=mimetype)
     file_metadata = {
-        'name': folder_name,
-        'mimeType': 'application/vnd.google-apps.folder'
-    }
-    if parent_folder_id:
-        file_metadata['parents'] = [parent_folder_id]
-
-    folder = drive_service.files().create(body=file_metadata, fields='id').execute()
-    return folder.get('id')
-
-# Upload file to Google Drive
-def upload_file(drive_service, folder_id, file_path):
-    file_metadata = {
-        'name': os.path.basename(file_path),
+        'name': file_name,
         'parents': [folder_id]
     }
-    media = MediaFileUpload(file_path)
-    file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    return file.get('id')
+    uploaded = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print(f"Uploaded file '{file_name}' to folder ID {folder_id}")
 
-# Main upload logic
-def upload_crawled_files(domain, local_base_folder, drive_base_folder_id):
-    drive_service = authenticate_drive()
+def upload_directory_to_drive(local_directory, website_domain):
+    service = authenticate_drive()
+    sanitized_folder_name = sanitize_folder_name(website_domain)
+    domain_folder_id = create_subfolder(service, DRIVE_PARENT_FOLDER_ID, sanitized_folder_name)
 
-    # Clean domain for folder naming
-    safe_domain = re.sub(r'[^\w]', '_', domain)
-    main_folder_name = f"{safe_domain}_crawl"
-
-    # Create main folder under provided drive folder
-    main_folder_id = create_folder(drive_service, main_folder_name, drive_base_folder_id)
-
-    # Create subfolder webcrawl inside it
-    subfolder_id = create_folder(drive_service, 'webcrawl', main_folder_id)
-
-    # Upload files in local_base_folder/webcrawl
-    target_folder = os.path.join(local_base_folder, 'webcrawl')
-    for filename in os.listdir(target_folder):
-        file_path = os.path.join(target_folder, filename)
-        if os.path.isfile(file_path):
-            upload_file(drive_service, subfolder_id, file_path)
-
-    print(f"Successfully uploaded to Google Drive under {main_folder_name}/webcrawl!")
+    for root, dirs, files in os.walk(local_directory):
+        for file in files:
+            local_path = os.path.join(root, file)
+            upload_file(service, local_path, domain_folder_id)
