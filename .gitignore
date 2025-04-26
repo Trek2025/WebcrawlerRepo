@@ -1,0 +1,3 @@
+# Ignore secret files
+credentials.json
+token.json
