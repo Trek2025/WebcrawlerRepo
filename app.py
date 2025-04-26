@@ -1,78 +1,69 @@
 import os
+import re
 import time
-import requests
 from urllib.parse import urlparse, urljoin
-from bs4 import BeautifulSoup
+
+from playwright.sync_api import sync_playwright
 from utils.uploader import upload_directory_to_drive
 
-MAX_DEPTH = 2
+def sanitize_filename(url):
+    return re.sub(r'[^a-zA-Z0-9_\-\.]', '_', url)
 
-def save_page(content, filename):
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
-    with open(filename, "w", encoding="utf-8") as f:
+def save_html(content, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         f.write(content)
 
-def is_valid_link(link, base_domain):
-    parsed_link = urlparse(link)
-    return parsed_link.netloc == "" or parsed_link.netloc == base_domain
-
-def crawl(url, folder_path, visited=None, depth=0):
-    if visited is None:
-        visited = set()
-
-    if depth > MAX_DEPTH:
+def crawl_page(page, url, domain, visited, save_dir, max_depth, current_depth):
+    if current_depth > max_depth or url in visited:
         return
-
-    if url in visited:
-        return
-
-    print(f"Crawling {url} at depth {depth}...")
 
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.1 Safari/605.1.15"
-        }
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code not in [200, 202]:  # Accept 200 and 202
-            print(f"Failed to fetch {url} - Status code: {response.status_code}")
+        response = page.goto(url, wait_until="networkidle", timeout=15000)
+        if not response or response.status >= 400:
+            print(f"Failed to fetch {url} - Status code: {response.status if response else 'No Response'}")
             return
+        print(f"Crawled {url}")
+
+        visited.add(url)
+        html_content = page.content()
+        filename = sanitize_filename(urlparse(url).path.strip("/")) or "index"
+        file_path = os.path.join(save_dir, f"{filename}.html")
+        save_html(html_content, file_path)
+
+        if current_depth < max_depth:
+            links = page.eval_on_selector_all("a", "elements => elements.map(e => e.href)")
+            for link in links:
+                if link and domain in link:
+                    crawl_page(page, link.split("#")[0], domain, visited, save_dir, max_depth, current_depth + 1)
+
     except Exception as e:
-        print(f"Exception while fetching {url}: {e}")
-        return
-
-    visited.add(url)
-
-    # Save the current page
-    parsed_url = urlparse(url)
-    path = parsed_url.path.strip("/")
-    if not path:
-        path = "index"
-    filename = os.path.join(folder_path, path.replace("/", "_") + ".html")
-    save_page(response.text, filename)
-
-    # Parse links and crawl them
-    soup = BeautifulSoup(response.text, "html.parser")
-    base_domain = parsed_url.netloc
-    for link_tag in soup.find_all("a", href=True):
-        link = link_tag['href']
-        absolute_link = urljoin(url, link)
-        if is_valid_link(absolute_link, base_domain):
-            time.sleep(1)  # Polite crawling
-            crawl(absolute_link, folder_path, visited, depth + 1)
+        print(f"Error crawling {url}: {str(e)}")
 
 def main():
     website_url = input("Enter the website URL to crawl (e.g., https://example.com): ").strip()
-
     parsed_url = urlparse(website_url)
-    domain_name = parsed_url.netloc.replace(".", "_")
-    local_directory = f"{domain_name}_crawl"
+    domain = parsed_url.netloc
+    if not domain:
+        print("Invalid URL. Exiting.")
+        return
 
-    print(f"Crawling {website_url} up to {MAX_DEPTH} levels...")
-    os.makedirs(local_directory, exist_ok=True)
-    crawl(website_url, local_directory)
+    folder_name = f"{domain.replace('.', '_')}_crawl"
+    save_dir = os.path.join(os.getcwd(), folder_name)
+    os.makedirs(save_dir, exist_ok=True)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        print(f"Crawling {website_url} up to 2 levels...")
+        visited = set()
+        crawl_page(page, website_url, domain, visited, save_dir, max_depth=1, current_depth=0)
+
+        browser.close()
 
     print("Uploading to Google Drive...")
-    upload_directory_to_drive(local_directory, domain_name)
+    upload_directory_to_drive(save_dir, domain)
     print("Done!")
 
 if __name__ == "__main__":
