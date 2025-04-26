@@ -3,7 +3,7 @@
 import os
 from bs4 import BeautifulSoup
 
-def extract_text_from_html_folder(folder_path, output_folder):
+def extract_texts_from_html_folder(folder_path, output_folder):
     os.makedirs(output_folder, exist_ok=True)
 
     for filename in os.listdir(folder_path):
