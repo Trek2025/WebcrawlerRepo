@@ -24,7 +24,7 @@ def crawl():
     try:
         crawl_website(website, crawl_path)
         extract_texts_from_html(crawl_path, clean_path)
-        upload_to_drive(clean_path)
+        upload_to_drive(clean_path, folder_id='1HMUSzFQHoVJi0ZMZUGEhfBzfOU3iaFAI')
 
         return jsonify({"message": f"Website crawled, cleaned, and uploaded for {website}"}), 200
     except Exception as e:
