@@ -2,7 +2,7 @@ import os
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-from uploader import upload_directory_to_drive
+from utils.uploader import upload_directory_to_drive
 
 def crawl_website(url, output_dir):
     if not os.path.exists(output_dir):
