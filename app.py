@@ -1,60 +1,73 @@
 import os
+import re
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse, urljoin
 from utils.uploader import upload_directory_to_drive
 
-def crawl_website(url, output_dir):
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+# Maximum crawling depth
+MAX_DEPTH = 2
 
+def clean_domain_name(url):
+    domain = urlparse(url).netloc
+    return domain.replace(".", "_")
+
+def save_page(content, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+def is_valid_link(link, base_domain):
+    if not link.startswith("http"):
+        return True  # Allow relative links
+    parsed_link = urlparse(link)
+    return parsed_link.netloc == base_domain
+
+def crawl(url, folder_path, visited, depth=0):
+    if depth > MAX_DEPTH:
+        return
     try:
-        response = requests.get(url)
-        response.raise_for_status()
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            print(f"Failed to fetch {url} - Status code: {response.status_code}")
+            return
     except Exception as e:
-        print(f"Failed to fetch {url}: {e}")
+        print(f"Exception while fetching {url}: {e}")
         return
 
-    soup = BeautifulSoup(response.text, 'html.parser')
+    parsed_url = urlparse(url)
+    if url in visited:
+        return
+    visited.add(url)
 
-    filename = os.path.join(output_dir, 'index.html')
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write(soup.prettify())
-    print(f"Saved {url} to {filename}")
+    # Save the page
+    path = url.replace("https://", "").replace("http://", "").replace("/", "_")
+    filename = os.path.join(folder_path, f"{path}.html")
+    save_page(response.text, filename)
 
-    for link_tag in soup.find_all('a', href=True):
-        link = urljoin(url, link_tag['href'])
-        parsed = urlparse(link)
-        if parsed.netloc != urlparse(url).netloc:
-            continue  # Skip external links
-        if parsed.path.endswith('.html'):
-            try:
-                sub_response = requests.get(link)
-                sub_response.raise_for_status()
-                sub_soup = BeautifulSoup(sub_response.text, 'html.parser')
-                sub_filename = os.path.join(output_dir, parsed.path.lstrip('/').replace('/', '_'))
-                os.makedirs(os.path.dirname(sub_filename), exist_ok=True)
-                with open(sub_filename, 'w', encoding='utf-8') as f:
-                    f.write(sub_soup.prettify())
-                print(f"Saved {link} to {sub_filename}")
-            except Exception as e:
-                print(f"Failed to fetch {link}: {e}")
+    # Parse links and crawl them
+    soup = BeautifulSoup(response.text, "html.parser")
+    base_domain = parsed_url.netloc
+    for link_tag in soup.find_all("a", href=True):
+        link = link_tag['href']
+        absolute_link = urljoin(url, link)
+        if is_valid_link(absolute_link, base_domain):
+            crawl(absolute_link, folder_path, visited, depth + 1)
 
 def main():
-    website_url = input("Enter the website URL to crawl (e.g., https://example.com): ").strip()
-    parsed_url = urlparse(website_url)
-    domain_name = parsed_url.netloc
+    target_url = input("Enter the website URL to crawl (e.g., https://example.com): ").strip()
+    domain_name = clean_domain_name(target_url)
+    local_directory = f"{domain_name}_crawl"
+    
+    print(f"Crawling {target_url} up to {MAX_DEPTH} levels...")
+    visited = set()
+    crawl(target_url, local_directory, visited)
 
-    # Local directory named after the domain
-    local_directory = f"{domain_name.replace('.', '_')}_crawl"
-
-    print(f"Crawling {website_url}...")
-    crawl_website(website_url, local_directory)
-
+    print(f"Saved crawled pages to {local_directory}")
+    
     print("Uploading to Google Drive...")
     upload_directory_to_drive(local_directory, domain_name)
-
-    print("✅ Done!")
+    print("Upload complete!")
 
 if __name__ == "__main__":
     main()
